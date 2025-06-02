@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beat 'em Up Hack and Slash</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: "Inter", sans-serif;
+            background-color: #1a202c; /* Dark background */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow: hidden; /* Prevent scrollbars */
+        }
+        canvas {
+            background-color: #2d3748; /* Slightly lighter dark background for canvas */
+            border-radius: 12px; /* Rounded corners for canvas */
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); /* Subtle shadow */
+            display: block;
+            touch-action: none; /* Disable default touch actions like scrolling/zooming */
+        }
+        .game-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            padding: 20px;
+            background-color: #2d3748;
+            border-radius: 15px;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.6);
+            color: #e2e8f0; /* Light text color */
+        }
+        .game-info {
+            display: flex;
+            justify-content: space-around;
+            width: 100%;
+            max-width: 800px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #e2e8f0;
+        }
+        .message-box {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px 40px;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 1.5rem;
+            display: none; /* Hidden by default */
+            z-index: 1000;
+            flex-direction: column; /* To stack buttons and text */
+            gap: 10px;
+        }
+        .message-box button {
+            background-color: #4CAF50; /* Green */
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1rem;
+            margin-top: 15px;
+        }
+        .message-box button:hover {
+            background-color: #45a049;
+        }
+        .summary-text {
+            margin-top: 15px;
+            font-size: 1rem;
+            color: #a0aec0; /* Lighter grey for summary */
+        }
+        .loading-spinner {
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid #4CAF50;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            margin: 10px auto;
+            display: none; /* Hidden by default */
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="game-container">
+        <div class="game-info">
+            <div>Vida: <span id="playerHealth">100</span></div>
+            <div>Pontuação: <span id="score">0</span></div>
+        </div>
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <div id="messageBox" class="message-box">
+        <p id="messageText"></p>
+        <button id="restartButton">Reiniciar Jogo</button>
+        <button id="generateSummaryButton" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition duration-300 ease-in-out transform hover:scale-105 mt-4">Gerar Resumo do Jogo ✨</button>
+        <div id="loadingSpinner" class="loading-spinner"></div>
+        <p id="summaryOutput" class="summary-text"></p>
+    </div>
+
+    <script>
+        // Global variables for Firebase (will be populated by the environment if available)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Game constants
+        const CANVAS_WIDTH = 800;
+        const CANVAS_HEIGHT = 600;
+        const PLAYER_SIZE = 30;
+        const PLAYER_SPEED = 5;
+        const PLAYER_ATTACK_RANGE = 70; // How far the sword arc extends
+        const PLAYER_ATTACK_ANGLE = Math.PI / 2; // 90 degrees arc
+        const PLAYER_ATTACK_DURATION = 200; // ms
+        const ENEMY_SPAWN_INTERVAL = 1500; // ms
+        const SCORE_PER_KILL = 10;
+
+        // Wind Slash constants
+        const WIND_SLASH_SPEED = 8;
+        const WIND_SLASH_SIZE = 30; // Radius for collision, visual size can be different
+        const WIND_SLASH_DAMAGE = 35;
+        const WIND_SLASH_LIFESPAN = 1000; // ms
+        const WIND_SLASH_COOLDOWN = 800; // ms
+
+        // Enemy types configuration
+        const ENEMY_TYPES = {
+            BASIC: {
+                size: 25,
+                speed: 2,
+                health: 30,
+                damage: 10,
+                color: '#e53e3e', // Red
+                name: 'Básico'
+            },
+            BRUTE: {
+                size: 40,
+                speed: 1.5,
+                health: 80,
+                damage: 25,
+                color: '#805ad5', // Purple
+                name: 'Bruto'
+            }
+        };
+
+        // Juice constants
+        const PARTICLE_LIFESPAN = 500; // ms
+        const DAMAGE_NUMBER_LIFESPAN = 1000; // ms
+        const SCREEN_SHAKE_DURATION = 150; // ms
+        const SCREEN_SHAKE_INTENSITY = 8; // pixels
+        const HIT_STOP_DURATION = 50; // ms
+
+        // Game state
+        let canvas, ctx;
+        let player;
+        let enemies = [];
+        let particles = []; // For visual effects
+        let damageNumbers = []; // For floating damage text
+        let windSlashes = []; // For wind slash projectiles
+        let score = 0;
+        let lastEnemySpawnTime = 0;
+        let gameRunning = true;
+        let messageBox, messageText, restartButton, generateSummaryButton, loadingSpinner, summaryOutput;
+
+        // Juice state
+        let shakeIntensity = 0;
+        let shakeDurationRemaining = 0;
+        let hitStopRemaining = 0;
+
+        // Input handling
+        const keys = {
+            w: false,
+            a: false,
+            s: false,
+            d: false,
+            space: false,
+            e: false // New key for wind slash
+        };
+
+        // Player object
+        class Player {
+            constructor(x, y, size, speed, health) {
+                this.x = x;
+                this.y = y;
+                this.size = size;
+                this.speed = speed;
+                this.health = health;
+                this.maxHealth = health;
+                this.isAttacking = false;
+                this.attackStartTime = 0;
+                this.direction = 0; // 0: right, Math.PI: left, Math.PI/2: down, -Math.PI/2: up
+
+                this.lastWindSlashTime = 0; // Cooldown for wind slash
+            }
+            update(deltaTime, currentTime) { // Added currentTime to update
+                // Determine direction based on movement keys
+                if (keys.w) this.y -= this.speed * deltaTime / 16;
+                if (keys.s) this.y += this.speed * deltaTime / 16;
+                if (keys.a) this.x -= this.speed * deltaTime / 16;
+                if (keys.d) this.x += this.speed * deltaTime / 16;
+
+                // Update player direction for attack visualization
+                if (keys.w) this.direction = -Math.PI / 2; // Up
+                if (keys.s) this.direction = Math.PI / 2;  // Down
+                if (keys.a) this.direction = Math.PI;      // Left
+                if (keys.d) this.direction = 0;            // Right
+                // Diagonal movement priority (e.g., if W and D are pressed, prefer D's direction)
+                if (keys.w && keys.d) this.direction = -Math.PI / 4; // Up-Right
+                if (keys.w && keys.a) this.direction = -3 * Math.PI / 4; // Up-Left
+                if (keys.s && keys.d) this.direction = Math.PI / 4; // Down-Right
+                if (keys.s && keys.a) this.direction = 3 * Math.PI / 4; // Down-Left
+
+
+                // Keep player within canvas bounds
+                this.x = Math.max(this.size / 2, Math.min(CANVAS_WIDTH - this.size / 2, this.x));
+                this.y = Math.max(this.size / 2, Math.min(CANVAS_HEIGHT - this.size / 2, this.y));
+
+                // Handle melee attack state
+                if (this.isAttacking && (performance.now() - this.attackStartTime > PLAYER_ATTACK_DURATION)) {
+                    this.isAttacking = false;
+                }
+
+                // Trigger melee attack
+                if (keys.space && !this.isAttacking) {
+                    this.attack();
+                }
+
+                // Trigger wind slash attack
+                if (keys.e && (currentTime - this.lastWindSlashTime > WIND_SLASH_COOLDOWN)) {
+                    this.launchWindSlash(currentTime);
+                }
+            }
+
+            attack() {
+                this.isAttacking = true;
+                this.attackStartTime = performance.now();
+                // Play a subtle sound effect if Tone.js were integrated
+                // For now, just visual and collision logic
+            }
+
+            launchWindSlash(currentTime) {
+                this.lastWindSlashTime = currentTime;
+                windSlashes.push(new WindSlash(this.x, this.y, this.direction, WIND_SLASH_SPEED, WIND_SLASH_DAMAGE, WIND_SLASH_LIFESPAN));
+            }
+
+            draw() {
+                // Draw player
+                ctx.fillStyle = '#63b3ed'; // Blue
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size / 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = '#2b6cb0';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Draw sword if attacking
+                if (this.isAttacking) {
+                    // Calculate attack animation progress
+                    const attackProgress = (performance.now() - this.attackStartTime) / PLAYER_ATTACK_DURATION;
+                    // Interpolate angle for the sword's sweep
+                    const currentSweepAngle = PLAYER_ATTACK_ANGLE * attackProgress;
+                    const swordAngle = this.direction - PLAYER_ATTACK_ANGLE / 2 + currentSweepAngle;
+
+                    ctx.save(); // Save the current canvas state
+                    ctx.translate(this.x, this.y); // Move origin to player's center
+                    ctx.rotate(swordAngle); // Rotate canvas to sword's angle
+
+                    // Draw sword components relative to the new origin (player's center)
+                    // This is an approximation of the second sword from the image
+                    const HANDLE_LENGTH = 18;
+                    const HANDLE_WIDTH = 8;
+                    const GUARD_WIDTH = 25;
+                    const GUARD_HEIGHT = 5;
+                    const BLADE_LENGTH = PLAYER_ATTACK_RANGE - HANDLE_LENGTH - (GUARD_HEIGHT / 2); // Adjust for guard
+                    const BLADE_BASE_WIDTH = 10;
+                    const BLADE_TIP_WIDTH = 2;
+
+                    // Handle (gold/yellow)
+                    ctx.fillStyle = '#FFD700'; // Gold color
+                    ctx.fillRect(0, -HANDLE_WIDTH / 2, HANDLE_LENGTH, HANDLE_WIDTH);
+
+                    // Guard (gold/yellow)
+                    ctx.fillRect(HANDLE_LENGTH, -GUARD_WIDTH / 2, GUARD_HEIGHT, GUARD_WIDTH);
+
+
+                    // Blade (gradient purple to orange/pink)
+                    const gradient = ctx.createLinearGradient(HANDLE_LENGTH + GUARD_HEIGHT, -BLADE_BASE_WIDTH / 2, HANDLE_LENGTH + GUARD_HEIGHT + BLADE_LENGTH, BLADE_BASE_WIDTH / 2);
+                    gradient.addColorStop(0, '#8A2BE2'); // Blue Violet (purple)
+                    gradient.addColorStop(1, '#FF69B4'); // Hot Pink (pink/orange)
+                    ctx.fillStyle = gradient;
+
+                    ctx.beginPath();
+                    ctx.moveTo(HANDLE_LENGTH + GUARD_HEIGHT, -BLADE_BASE_WIDTH / 2); // Top-left of blade base
+                    ctx.lineTo(HANDLE_LENGTH + GUARD_HEIGHT + BLADE_LENGTH, -BLADE_TIP_WIDTH / 2); // Top-right (tip)
+                    ctx.lineTo(HANDLE_LENGTH + GUARD_HEIGHT + BLADE_LENGTH, BLADE_TIP_WIDTH / 2);  // Bottom-right (tip)
+                    ctx.lineTo(HANDLE_LENGTH + GUARD_HEIGHT, BLADE_BASE_WIDTH / 2);  // Bottom-left of blade base
+                    ctx.closePath();
+                    ctx.fill();
+
+                    ctx.restore(); // Restore the canvas state
+                }
+            }
+
+            takeDamage(amount) {
+                this.health -= amount;
+                triggerScreenShake(SCREEN_SHAKE_INTENSITY, SCREEN_SHAKE_DURATION); // Trigger screen shake
+                if (this.health <= 0) {
+                    this.health = 0;
+                    gameOver("Game Over! Você foi derrotado.");
+                }
+                updateUI();
+            }
+        }
+
+        // Enemy object
+        class Enemy {
+            constructor(x, y, typeConfig) {
+                this.x = x;
+                this.y = y;
+                this.size = typeConfig.size;
+                this.speed = typeConfig.speed;
+                this.health = typeConfig.health;
+                this.maxHealth = typeConfig.health;
+                this.damage = typeConfig.damage;
+                this.color = typeConfig.color;
+                this.name = typeConfig.name;
+                this.isAlive = true;
+            }
+
+            update(deltaTime) {
+                if (!this.isAlive) return;
+
+                // Move towards the player
+                const angle = Math.atan2(player.y - this.y, player.x - this.x);
+                this.x += this.speed * Math.cos(angle) * deltaTime / 16;
+                this.y += this.speed * Math.sin(angle) * deltaTime / 16;
+            }
+
+            draw() {
+                if (!this.isAlive) return;
+
+                // Draw enemy
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size / 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = darkenColor(this.color, 20); // Darken border color
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                // Draw health bar
+                const healthBarWidth = this.size * 1.5;
+                const healthBarHeight = 5;
+                const healthRatio = this.health / this.maxHealth;
+                ctx.fillStyle = '#4a5568'; // Background for health bar
+                ctx.fillRect(this.x - healthBarWidth / 2, this.y - this.size / 2 - healthBarHeight - 5, healthBarWidth, healthBarHeight);
+                ctx.fillStyle = '#48bb78'; // Green for health
+                ctx.fillRect(this.x - healthBarWidth / 2, this.y - this.size / 2 - healthBarHeight - 5, healthBarWidth * healthRatio, healthBarHeight);
+            }
+
+            takeDamage(amount) {
+                this.health -= amount;
+                spawnDamageNumber(this.x, this.y, amount, '#ffffff'); // White damage number
+                triggerHitStop(HIT_STOP_DURATION); // Trigger hit stop
+                if (this.health <= 0) {
+                    this.health = 0;
+                    this.isAlive = false;
+                    score += SCORE_PER_KILL;
+                    spawnParticles(this.x, this.y, 20, this.color); // Spawn particles on death
+                    updateUI();
+                } else {
+                    spawnParticles(this.x, this.y, 5, '#ffcc00'); // Spawn smaller particles on hit
+                }
+            }
+        }
+
+        // Particle object for juice effects
+        class Particle {
+            constructor(x, y, radius, color, velocityX, velocityY, lifespan) {
+                this.x = x;
+                this.y = y;
+                this.radius = radius;
+                this.color = color;
+                this.velocityX = velocityX;
+                this.velocityY = velocityY;
+                this.lifespan = lifespan; // in ms
+                this.lifeRemaining = lifespan;
+                this.alpha = 1;
+            }
+
+            update(deltaTime) {
+                this.x += this.velocityX * deltaTime / 16;
+                this.y += this.velocityY * deltaTime / 16;
+                this.lifeRemaining -= deltaTime;
+                this.alpha = Math.max(0, this.lifeRemaining / this.lifespan); // Fade out
+                this.radius = Math.max(0, this.radius - (deltaTime / this.lifespan) * (this.radius / 2)); // Shrink
+            }
+
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        // Damage number object for floating text
+        class DamageNumber {
+            constructor(x, y, value, color, lifespan) {
+                this.x = x;
+                this.y = y;
+                this.value = value;
+                this.color = color;
+                this.lifespan = lifespan;
+                this.lifeRemaining = lifespan;
+                this.alpha = 1;
+                this.velocityY = 0.5; // Moves upwards
+            }
+
+            update(deltaTime) {
+                this.y -= this.velocityY * deltaTime / 16;
+                this.lifeRemaining -= deltaTime;
+                this.alpha = Math.max(0, this.lifeRemaining / this.lifespan);
+            }
+
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.fillStyle = this.color;
+                ctx.font = 'bold 16px Inter';
+                ctx.textAlign = 'center';
+                ctx.fillText(this.value, this.x, this.y);
+                ctx.restore();
+            }
+        }
+
+        // Wind Slash projectile object
+        class WindSlash {
+            constructor(x, y, direction, speed, damage, lifespan) {
+                this.x = x;
+                this.y = y;
+                this.direction = direction;
+                this.speed = speed;
+                this.damage = damage;
+                this.lifespan = lifespan;
+                this.lifeRemaining = lifespan;
+                this.alpha = 1;
+                this.size = WIND_SLASH_SIZE; // For collision detection
+                this.hit = false; // To ensure it only hits one enemy
+            }
+
+            update(deltaTime) {
+                if (this.hit) return; // Stop moving if it hit something
+
+                this.x += this.speed * Math.cos(this.direction) * deltaTime / 16;
+                this.y += this.speed * Math.sin(this.direction) * deltaTime / 16;
+                this.lifeRemaining -= deltaTime;
+                this.alpha = Math.max(0, this.lifeRemaining / this.lifespan); // Fade out
+            }
+
+            draw() {
+                if (this.lifeRemaining <= 0) return;
+
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.strokeStyle = '#ADD8E6'; // Light blue for wind slash
+                ctx.lineWidth = 4;
+
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.direction);
+
+                // Draw a crescent shape for the wind slash
+                ctx.beginPath();
+                ctx.arc(0, 0, this.size, -Math.PI / 4, Math.PI / 4); // Main arc
+                ctx.lineTo(this.size * 0.8 * Math.cos(Math.PI / 4), this.size * 0.8 * Math.sin(Math.PI / 4)); // Inner line to create crescent
+                ctx.arc(0, 0, this.size * 0.8, Math.PI / 4, -Math.PI / 4, true); // Inner arc
+                ctx.closePath();
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(173, 216, 230, 0.3)'; // Semi-transparent fill
+                ctx.fill();
+
+                ctx.restore();
+            }
+        }
+
+
+        // Initialize game
+        function initGame() {
+            canvas = document.getElementById('gameCanvas');
+            ctx = canvas.getContext('2d');
+            canvas.width = CANVAS_WIDTH;
+            canvas.height = CANVAS_HEIGHT;
+
+            messageBox = document.getElementById('messageBox');
+            messageText = document.getElementById('messageText');
+            restartButton = document.getElementById('restartButton');
+            generateSummaryButton = document.getElementById('generateSummaryButton');
+            loadingSpinner = document.getElementById('loadingSpinner');
+            summaryOutput = document.getElementById('summaryOutput');
+
+            restartButton.addEventListener('click', resetGame);
+            generateSummaryButton.addEventListener('click', generateGameSummary);
+
+            player = new Player(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, PLAYER_SIZE, PLAYER_SPEED, 100);
+            enemies = [];
+            particles = [];
+            damageNumbers = [];
+            windSlashes = []; // Initialize wind slashes array
+            score = 0;
+            lastEnemySpawnTime = performance.now();
+            gameRunning = true;
+            messageBox.style.display = 'none'; // Hide message box on init/reset
+            generateSummaryButton.style.display = 'none'; // Hide summary button initially
+            summaryOutput.textContent = ''; // Clear previous summary
+            loadingSpinner.style.display = 'none'; // Hide spinner
+
+            // Reset juice state
+            shakeIntensity = 0;
+            shakeDurationRemaining = 0;
+            hitStopRemaining = 0;
+
+            updateUI();
+
+            // Set up event listeners for keyboard input
+            window.addEventListener('keydown', (e) => {
+                if (e.key === 'w') keys.w = true;
+                if (e.key === 'a') keys.a = true;
+                if (e.key === 's') keys.s = true;
+                if (e.key === 'd') keys.d = true;
+                if (e.code === 'Space') keys.space = true;
+                if (e.key === 'e') keys.e = true; // Handle 'e' key
+            });
+
+            window.addEventListener('keyup', (e) => {
+                if (e.key === 'w') keys.w = false;
+                if (e.key === 'a') keys.a = false;
+                if (e.key === 's') keys.s = false;
+                if (e.key === 'd') keys.d = false;
+                if (e.code === 'Space') keys.space = false;
+                if (e.key === 'e') keys.e = false; // Handle 'e' key
+            });
+
+            // Start the game loop
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Game loop
+        let lastTime = 0;
+        function gameLoop(currentTime) {
+            if (!gameRunning) return;
+
+            const deltaTime = currentTime - lastTime;
+            lastTime = currentTime;
+
+            // Apply hit stop
+            if (hitStopRemaining > 0) {
+                hitStopRemaining -= deltaTime;
+                if (hitStopRemaining < 0) hitStopRemaining = 0;
+                // If hit stop is active, we skip the update phase
+                requestAnimationFrame(gameLoop);
+                return;
+            }
+
+            update(currentTime, deltaTime); // Pass currentTime to update
+            draw();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Update game state
+        function update(currentTime, deltaTime) { // Accept currentTime as an argument
+            player.update(deltaTime, currentTime); // Pass currentTime to player update
+
+            // Update screen shake
+            if (shakeDurationRemaining > 0) {
+                shakeIntensity = Math.random() * SCREEN_SHAKE_INTENSITY;
+                shakeDurationRemaining -= deltaTime;
+                if (shakeDurationRemaining < 0) {
+                    shakeDurationRemaining = 0;
+                    shakeIntensity = 0;
+                }
+            } else {
+                shakeIntensity = 0;
+            }
+
+            // Spawn enemies
+            if (currentTime - lastEnemySpawnTime > ENEMY_SPAWN_INTERVAL) {
+                spawnEnemy();
+                lastEnemySpawnTime = currentTime;
+            }
+
+            // Update and check collisions for enemies
+            enemies.forEach(enemy => {
+                if (enemy.isAlive) {
+                    enemy.update(deltaTime);
+
+                    // Check for player-enemy collision (enemy attacking player)
+                    if (checkCircleCollision(player, enemy)) {
+                        player.takeDamage(enemy.damage); // Enemy deals damage
+                        // Push enemy back slightly after collision to prevent continuous damage
+                        const angle = Math.atan2(enemy.y - player.y, enemy.x - player.x);
+                        enemy.x += Math.cos(angle) * (player.size / 2 + enemy.size / 2);
+                        enemy.y += Math.sin(angle) * (player.size / 2 + enemy.size / 2);
+                    }
+
+                    // Check for sword-enemy collision
+                    if (player.isAttacking && checkSwordCollision(player, enemy)) {
+                        enemy.takeDamage(20); // Sword damage
+                    }
+                }
+            });
+
+            // Update and check collisions for wind slashes
+            windSlashes.forEach(slash => {
+                slash.update(deltaTime);
+                if (!slash.hit) { // Only check collision if it hasn't hit yet
+                    enemies.forEach(enemy => {
+                        if (enemy.isAlive && checkCircleCollision(slash, enemy)) {
+                            enemy.takeDamage(slash.damage);
+                            slash.hit = true; // Mark slash as hit
+                        }
+                    });
+                }
+            });
+
+
+            // Remove dead enemies
+            enemies = enemies.filter(enemy => enemy.isAlive);
+
+            // Remove expired or hit wind slashes
+            windSlashes = windSlashes.filter(slash => slash.lifeRemaining > 0 && !slash.hit);
+
+            // Update particles
+            particles.forEach(p => p.update(deltaTime));
+            particles = particles.filter(p => p.lifeRemaining > 0);
+
+            // Update damage numbers
+            damageNumbers.forEach(dn => dn.update(deltaTime));
+            damageNumbers = damageNumbers.filter(dn => dn.lifeRemaining > 0);
+        }
+
+        // Draw game elements
+        function draw() {
+            ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT); // Clear canvas
+
+            // Apply screen shake translation
+            ctx.save();
+            ctx.translate((Math.random() - 0.5) * shakeIntensity, (Math.random() - 0.5) * shakeIntensity);
+
+            player.draw();
+            enemies.forEach(enemy => enemy.draw());
+
+            // Draw wind slashes
+            windSlashes.forEach(slash => slash.draw());
+
+            // Draw particles
+            particles.forEach(p => p.draw());
+
+            // Draw damage numbers (after other elements so they float on top)
+            damageNumbers.forEach(dn => dn.draw());
+
+            ctx.restore(); // Restore context to remove screen shake translation
+        }
+
+        // Helper function for circle-to-circle collision
+        function checkCircleCollision(obj1, obj2) {
+            const dx = obj1.x - obj2.x;
+            const dy = obj1.y - obj2.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            return distance < (obj1.size / 2 + obj2.size / 2);
+        }
+
+        // Helper function for sword arc collision with enemy (simplified)
+        function checkSwordCollision(player, enemy) {
+            if (!player.isAttacking) return false;
+
+            // Check if enemy is within the general attack range
+            const dx = enemy.x - player.x;
+            const dy = enemy.y - player.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+
+            if (distance > PLAYER_ATTACK_RANGE + enemy.size / 2 || distance < player.size / 2) {
+                return false; // Too far or too close (inside player)
+            }
+
+            // Check if enemy is within the attack angle
+            let angleToEnemy = Math.atan2(dy, dx);
+            // Normalize angles to be between -PI and PI
+            angleToEnemy = normalizeAngle(angleToEnemy);
+            let playerAttackStartAngle = normalizeAngle(player.direction - PLAYER_ATTACK_ANGLE / 2);
+            let playerAttackEndAngle = normalizeAngle(player.direction + PLAYER_ATTACK_ANGLE / 2);
+
+            // Handle wrap-around for angles (e.g., if attack crosses -PI/PI boundary)
+            if (playerAttackStartAngle > playerAttackEndAngle) {
+                return (angleToEnemy >= playerAttackStartAngle || angleToEnemy <= playerAttackEndAngle);
+            } else {
+                return (angleToEnemy >= playerAttackStartAngle && angleToEnemy <= playerAttackEndAngle);
+            }
+        }
+
+        // Normalize angle to be between -PI and PI
+        function normalizeAngle(angle) {
+            while (angle <= -Math.PI) angle += 2 * Math.PI;
+            while (angle > Math.PI) angle -= 2 * Math.PI;
+            return angle;
+        }
+
+        // Spawn a new enemy at a random edge of the canvas
+        function spawnEnemy() {
+            let x, y;
+            const edge = Math.floor(Math.random() * 4); // 0: top, 1: right, 2: bottom, 3: left
+
+            switch (edge) {
+                case 0: // Top
+                    x = Math.random() * CANVAS_WIDTH;
+                    y = -ENEMY_TYPES.BRUTE.size; // Use largest enemy size to ensure it spawns fully off-screen
+                    break;
+                case 1: // Right
+                    x = CANVAS_WIDTH + ENEMY_TYPES.BRUTE.size;
+                    y = Math.random() * CANVAS_HEIGHT;
+                    break;
+                case 2: // Bottom
+                    x = Math.random() * CANVAS_WIDTH;
+                    y = CANVAS_HEIGHT + ENEMY_TYPES.BRUTE.size;
+                    break;
+                case 3: // Left
+                    x = -ENEMY_TYPES.BRUTE.size;
+                    y = Math.random() * CANVAS_HEIGHT;
+                    break;
+            }
+
+            // Randomly choose enemy type (70% basic, 30% brute)
+            const randomChance = Math.random();
+            const selectedType = randomChance < 0.7 ? ENEMY_TYPES.BASIC : ENEMY_TYPES.BRUTE;
+
+            enemies.push(new Enemy(x, y, selectedType));
+        }
+
+        // Function to spawn particles
+        function spawnParticles(x, y, count, color) {
+            for (let i = 0; i < count; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const speed = Math.random() * 3 + 1; // Random speed
+                const radius = Math.random() * 3 + 1; // Random size
+                const velocityX = Math.cos(angle) * speed;
+                const velocityY = Math.sin(angle) * speed;
+                particles.push(new Particle(x, y, radius, color, velocityX, velocityY, PARTICLE_LIFESPAN));
+            }
+        }
+
+        // Function to spawn damage numbers
+        function spawnDamageNumber(x, y, value, color) {
+            damageNumbers.push(new DamageNumber(x, y, value, color, DAMAGE_NUMBER_LIFESPAN));
+        }
+
+        // Function to trigger screen shake
+        function triggerScreenShake(intensity, duration) {
+            shakeIntensity = intensity;
+            shakeDurationRemaining = duration;
+        }
+
+        // Function to trigger hit stop
+        function triggerHitStop(duration) {
+            hitStopRemaining = duration;
+        }
+
+        // Helper to darken a color (for enemy borders)
+        function darkenColor(hex, percent) {
+            let f=parseInt(hex.slice(1),16),t=percent<0?0:255,p=percent<0?percent*-1:percent,R=f>>16,G=(f>>8)&0x00FF,B=f&0x0000FF;
+            return "#"+(0x1000000+(Math.round((t-R)*p)+R)*0x10000+(Math.round((t-G)*p)+G)*0x100+(Math.round((t-B)*p)+B)).toString(16).slice(1);
+        }
+
+        // Update UI elements
+        function updateUI() {
+            document.getElementById('playerHealth').textContent = player.health;
+            document.getElementById('score').textContent = score;
+        }
+
+        // Game over function
+        function gameOver(message) {
+            gameRunning = false;
+            messageText.textContent = message;
+            messageBox.style.display = 'flex'; // Use flex to stack elements
+            generateSummaryButton.style.display = 'block'; // Show summary button
+        }
+
+        // Reset game function
+        function resetGame() {
+            // Re-initialize all game state variables
+            player = new Player(CANVAS_WIDTH / 2, CANVAS_HEIGHT / 2, PLAYER_SIZE, PLAYER_SPEED, 100);
+            enemies = [];
+            particles = [];
+            damageNumbers = [];
+            windSlashes = []; // Reset wind slashes array
+            score = 0;
+            lastEnemySpawnTime = performance.now();
+            gameRunning = true;
+            messageBox.style.display = 'none';
+            generateSummaryButton.style.display = 'none'; // Hide summary button on reset
+            summaryOutput.textContent = ''; // Clear previous summary
+            loadingSpinner.style.display = 'none'; // Hide spinner
+
+            // Reset juice state
+            shakeIntensity = 0;
+            shakeDurationRemaining = 0;
+            hitStopRemaining = 0;
+
+            // Reset keys state
+            for (const key in keys) {
+                keys[key] = false;
+            }
+
+            updateUI();
+            requestAnimationFrame(gameLoop); // Restart the game loop
+        }
+
+        // Function to generate game summary using Gemini API
+        async function generateGameSummary() {
+            loadingSpinner.style.display = 'block'; // Show spinner
+            summaryOutput.textContent = ''; // Clear previous summary
+            generateSummaryButton.disabled = true; // Disable button during generation
+
+            const prompt = `O jogador acabou de terminar um jogo de hack and slash. A pontuação final do jogador foi ${score} e a vida restante foi ${player.health}. Forneça um breve resumo do desempenho do jogador e uma mensagem motivacional ou uma sugestão para a próxima vez. Responda em português.`;
+
+            let chatHistory = [];
+            chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+            const payload = { contents: chatHistory };
+            const apiKey = ""; // If you want to use models other than gemini-2.0-flash or imagen-3.0-generate-002, provide an API key here. Otherwise, leave this as-is.
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await response.json();
+
+                if (result.candidates && result.candidates.length > 0 &&
+                    result.candidates[0].content && result.candidates[0].content.parts &&
+                    result.candidates[0].content.parts.length > 0) {
+                    const text = result.candidates[0].content.parts[0].text;
+                    summaryOutput.textContent = text;
+                } else {
+                    summaryOutput.textContent = "Não foi possível gerar um resumo. Tente novamente.";
+                    console.error("Unexpected API response structure:", result);
+                }
+            } catch (error) {
+                summaryOutput.textContent = "Ocorreu um erro ao gerar o resumo. Verifique a consola para mais detalhes.";
+                console.error("Error calling Gemini API:", error);
+            } finally {
+                loadingSpinner.style.display = 'none'; // Hide spinner
+                generateSummaryButton.disabled = false; // Re-enable button
+            }
+        }
+
+        // Initialize the game when the window loads
+        window.onload = initGame;
+    </script>
+</body>
+</html>
